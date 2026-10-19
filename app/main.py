@@ -140,10 +140,24 @@ async def send_selected_bot_message(payload: MsgReq):
     failed = 0
     
     async with httpx.AsyncClient(timeout=10.0) as client:
+        # 1. Pehle streamer ke channel details se numeric chatroom_id fetch karte hain
+        chatroom_id = None
+        try:
+            chan_resp = await client.get(f"https://kick.com/api/v2/channels/{payload.streamer.strip().lower()}")
+            if chan_resp.status_code == 200:
+                chan_data = chan_resp.json()
+                chatroom_id = chan_data.get("chatroom", {}).get("id")
+        except Exception as e:
+            print(f"Chatroom ID fetch error: {e}")
+            
+        if not chatroom_id:
+            return {"success": False, "error": f"Could not find chatroom ID for streamer: {payload.streamer}"}
+
+        # 2. Ab verified chatroom_id par tokens ke zariye message dispatch karenge
         for t in payload.tokens:
             headers = {
                 "Authorization": f"Bearer {t}",
-                "User-Agent": "Mozilla/5.0",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "Content-Type": "application/json",
                 "Accept": "application/json"
             }
@@ -152,7 +166,7 @@ async def send_selected_bot_message(payload: MsgReq):
                 "type": "message"
             }
             try:
-                resp = await client.post(f"https://kick.com/api/v2/messages/send/{payload.streamer}", json=body, headers=headers)
+                resp = await client.post(f"https://kick.com/api/v2/messages/send/{chatroom_id}", json=body, headers=headers)
                 if resp.status_code in [200, 201]:
                     sent += 1
                 else:
