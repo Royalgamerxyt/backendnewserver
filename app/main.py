@@ -140,7 +140,7 @@ async def send_selected_bot_message(payload: MsgReq):
     failed = 0
     
     async with httpx.AsyncClient(timeout=10.0) as client:
-        # 1. Pehle streamer ke channel details se numeric chatroom_id fetch karte hain
+        # 1. Streamer ke channel details se numeric chatroom_id fetch karte hain
         chatroom_id = None
         try:
             chan_resp = await client.get(f"https://kick.com/api/v2/channels/{payload.streamer.strip().lower()}")
@@ -153,7 +153,7 @@ async def send_selected_bot_message(payload: MsgReq):
         if not chatroom_id:
             return {"success": False, "error": f"Could not find chatroom ID for streamer: {payload.streamer}"}
 
-        # 2. Ab verified chatroom_id par tokens ke zariye message dispatch karenge
+        # 2. Emote ya text message ko tokens ke zariye chatroom mein dispatch karenge
         for t in payload.tokens:
             headers = {
                 "Authorization": f"Bearer {t}",
@@ -161,10 +161,12 @@ async def send_selected_bot_message(payload: MsgReq):
                 "Content-Type": "application/json",
                 "Accept": "application/json"
             }
+            
             body = {
                 "content": payload.message,
                 "type": "message"
             }
+            
             try:
                 resp = await client.post(f"https://kick.com/api/v2/messages/send/{chatroom_id}", json=body, headers=headers)
                 if resp.status_code in [200, 201]:
