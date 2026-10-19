@@ -7,6 +7,7 @@ from sqlalchemy import create_engine, Column, Integer, String, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
+import re
 import httpx
 from cryptography.fernet import Fernet
 
@@ -139,8 +140,20 @@ async def send_selected_bot_message(payload: MsgReq):
     sent = 0
     failed = 0
     
-    print(f"DEBUG: Attempting to send message/emote to streamer '{payload.streamer}': {payload.message}")
+    # 1. Clean message to prevent NO_LINKS_ERROR and 500 Server Error
+    msg_content = payload.message.strip()
     
+    # Check if raw Kick emote URL is passed and convert to clean text tag
+    if "files.kick.com/emotes/" in msg_content:
+        emote_id = msg_content.split("/emotes/")[1].split("/")[0]
+        msg_content = f"Emote#{emote_id}"
+    elif msg_content.startswith("[emote:") and msg_content.endswith("]"):
+        # Strip brackets if 500 occurs on raw syntax
+        emote_id = msg_content.replace("[emote:", "").replace("]", "")
+        msg_content = f"Emote#{emote_id}"
+
+    print(f"DEBUG: Processed Message to Send: {msg_content}")
+
     async with httpx.AsyncClient(timeout=10.0) as client:
         chatroom_id = None
         try:
@@ -152,10 +165,7 @@ async def send_selected_bot_message(payload: MsgReq):
             print(f"Chatroom ID fetch error: {e}")
             
         if not chatroom_id:
-            print(f"DEBUG: Could not resolve chatroom ID for {payload.streamer}")
             return {"success": False, "error": f"Could not find chatroom ID for streamer: {payload.streamer}"}
-
-        print(f"DEBUG: Resolved Chatroom ID: {chatroom_id}")
 
         for t in payload.tokens:
             headers = {
@@ -166,19 +176,18 @@ async def send_selected_bot_message(payload: MsgReq):
             }
             
             body = {
-                "content": payload.message,
+                "content": msg_content,
                 "type": "message"
             }
             
             try:
                 resp = await client.post(f"https://kick.com/api/v2/messages/send/{chatroom_id}", json=body, headers=headers)
-                print(f"DEBUG: Kick API Response Status: {resp.status_code}, Body: {resp.text}")
+                print(f"DEBUG Response Status: {resp.status_code}, Body: {resp.text}")
                 if resp.status_code in [200, 201]:
                     sent += 1
                 else:
                     failed += 1
-            except Exception as ex:
-                print(f"DEBUG: Request exception: {ex}")
+            except Exception:
                 failed += 1
                 
     return {
