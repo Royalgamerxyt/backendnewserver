@@ -1,41 +1,16 @@
-import os
-import time
-from fastapi import FastAPI, HTTPException
+from datetime import datetime
+from typing import List, Optional
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy import create_engine, Column, Integer, String, DateTime
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+import os
+import httpx
 from cryptography.fernet import Fernet
-import dramatiq
-import redis
-from prometheus_client import Counter, Gauge, generate_latest
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./test.db")
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-FERNET_KEY = os.getenv("FERNET_KEY") or Fernet.generate_key().decode()
-fernet = Fernet(FERNET_KEY.encode() if isinstance(FERNET_KEY, str) else FERNET_KEY)
-
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {})
-SessionLocal = sessionmaker(bind=engine)
-Base = declarative_base()
-
-class Token(Base):
-    __tablename__ = "tokens"
-    id = Column(Integer, primary_key=True, index=True)
-    token_enc = Column(Text, nullable=False)
-    username = Column(String(256), nullable=True)
-    status = Column(String(32), default="idle")
-    added_at = Column(DateTime, default=lambda: time.strftime("%Y-%m-%d %H:%M:%S"))
-
-Base.metadata.create_all(bind=engine)
-
-r = redis.from_url(REDIS_URL)
-
-MET_ENQUEUED = Counter("classic_enqueued_jobs_total", "Jobs enqueued")
-MET_QUEUE_LEN = Gauge("classic_queue_length", "Validation queue length")
-
-app = FastAPI(title="ClassicAgentBackend", version="2.0")
+app = FastAPI(title="ClassicAgentBot Backend")
 
 app.add_middleware(
     CORSMiddleware,
@@ -45,37 +20,80 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./test.db")
+FERNET_KEY = os.getenv("FERNET_KEY")
+if not FERNET_KEY:
+    FERNET_KEY = Fernet.generate_key().decode()
+fernet = Fernet(FERNET_KEY.encode() if isinstance(FERNET_KEY, str) else FERNET_KEY)
+
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+class Token(Base):
+    __tablename__ = "tokens"
+    id = Column(Integer, primary_key=True, index=True)
+    token_enc = Column(String, nullable=False)
+    username = Column(String, nullable=True)
+    status = Column(String, default="active")
+    added_at = Column(DateTime, default=datetime.utcnow)
+
+Base.metadata.create_all(bind=engine)
+
 class AddTokensReq(BaseModel):
     tokens: List[str]
 
-class ProxyValidateReq(BaseModel):
-    proxies: List[str]
-
-class FollowReq(BaseModel):
-    streamer: str
-    tokens: List[str]
-    proxies: Optional[List[str]] = []
-
-class MessageReq(BaseModel):
-    streamer: str
-    tokens: List[str]
-    message: str
-    proxies: Optional[List[str]] = []
-
-from datetime import datetime  # Ensure kar lena ki ye top par imported ho
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
 
 @app.post("/api/add-tokens")
-def add_tokens(payload: AddTokensReq):
+async def add_tokens(payload: AddTokensReq):
     db = SessionLocal()
     added = 0
     ids = []
-    for t in payload.tokens:
-        enc = fernet.encrypt(t.encode()).decode()
-        tok = Token(token_enc=enc, added_at=datetime.utcnow())  # <-- Yeh line zaroori hai
-        db.add(tok)
-        db.commit()
-        ids.append(tok.id)
-        added += 1
+    
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        for t in payload.tokens:
+            t_clean = t.strip()
+            if not t_clean:
+                continue
+            
+            # Kick API se real username fetch karne ki koshish karte hain
+            headers = {
+                "Authorization": f"Bearer {t_clean}",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "application/json"
+            }
+            
+            fetched_username = None
+            token_status = "active"
+            
+            try:
+                resp = await client.get("https://kick.com/api/v1/user", headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    fetched_username = data.get("username")
+                else:
+                    token_status = "invalid"
+            except Exception:
+                token_status = "error"
+
+            enc = fernet.encrypt(t_clean.encode()).decode()
+            
+            # Database mein save karte waqt real username store hoga
+            tok = Token(
+                token_enc=enc, 
+                username=fetched_username, 
+                status=token_status,
+                added_at=datetime.utcnow()
+            )
+            db.add(tok)
+            db.commit()
+            db.refresh(tok)
+            ids.append(tok.id)
+            added += 1
+            
     db.close()
     return {"success": True, "added": added, "ids": ids}
 
@@ -83,113 +101,13 @@ def add_tokens(payload: AddTokensReq):
 def list_tokens():
     db = SessionLocal()
     rows = db.query(Token).all()
-    out = [{"id": r.id, "username": r.username, "status": r.status} for r in rows]
+    out = [
+        {
+            "id": r.id, 
+            "username": r.username if r.username else f"Account #{r.id}", 
+            "status": r.status
+        } 
+        for r in rows
+    ]
     db.close()
     return {"tokens": out}
-
-@app.post("/api/validate-tokens")
-def validate_tokens(ids: List[int]):
-    db = SessionLocal()
-    queued = 0
-    for id_ in ids:
-        t = db.query(Token).filter(Token.id == id_).first()
-        if not t:
-            continue
-        from app.tasks import validate_token_actor
-        validate_token_actor.send(id_)
-        queued += 1
-        MET_ENQUEUED.inc()
-    db.close()
-    try:
-        MET_QUEUE_LEN.set(queued)
-    except Exception:
-        pass
-    
-    results = [{"token": i, "valid": True, "username": f"User_{i}"} for i in ids]
-    return {
-        "success": True, 
-        "summary": {"validCount": queued, "invalidCount": 0, "total": len(ids)}, 
-        "results": results,
-        "queued": queued
-    }
-
-@app.post("/api/validate-proxies")
-def validate_proxies(payload: ProxyValidateReq):
-    working = len(payload.proxies)
-    return {
-        "success": True,
-        "summary": {
-            "working": working,
-            "dead": 0
-        }
-    }
-
-@app.post("/api/follow-selected-channel")
-def follow_selected_channel(payload: FollowReq):
-    db = SessionLocal()
-    queued = 0
-    for t_str in payload.tokens:
-        tok = None
-        try:
-            t_id = int(t_str)
-            tok = db.query(Token).filter(Token.id == t_id).first()
-        except ValueError:
-            tok = db.query(Token).filter(Token.status == "active").first()
-            if not tok:
-                enc = fernet.encrypt(t_str.encode()).decode()
-                tok = Token(token_enc=enc, status="active")
-                db.add(tok)
-                db.commit()
-
-        if tok:
-            from app.tasks import follow_channel_actor
-            follow_channel_actor.send(tok.id, payload.streamer)
-            queued += 1
-
-    db.close()
-    return {
-        "success": True,
-        "summary": {
-            "followed": queued,
-            "failed": 0
-        }
-    }
-
-@app.post("/api/send-selected-bot-message")
-def send_selected_bot_message(payload: MessageReq):
-    db = SessionLocal()
-    queued = 0
-    for t_str in payload.tokens:
-        tok = None
-        try:
-            t_id = int(t_str)
-            tok = db.query(Token).filter(Token.id == t_id).first()
-        except ValueError:
-            tok = db.query(Token).filter(Token.status == "active").first()
-            if not tok:
-                enc = fernet.encrypt(t_str.encode()).decode()
-                tok = Token(token_enc=enc, status="active")
-                db.add(tok)
-                db.commit()
-
-        if tok:
-            from app.tasks import send_message_actor
-            send_message_actor.send(tok.id, payload.streamer, payload.message)
-            queued += 1
-
-    db.close()
-    return {
-        "success": True,
-        "summary": {
-            "sent": queued,
-            "failed": 0
-        }
-    }
-
-@app.get("/metrics")
-def metrics():
-    return generate_latest()
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
