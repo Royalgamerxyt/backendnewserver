@@ -20,8 +20,15 @@ r = redis.from_url(REDIS_URL)
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {})
 SessionLocal = sessionmaker(bind=engine)
 
-MET_SUCCESS = Counter("classic_task_success_total", "success")
-MET_FAIL = Counter("classic_task_fail_total", "fail")
+try:
+    MET_SUCCESS = Counter("classic_task_success_total", "success")
+except ValueError:
+    pass
+
+try:
+    MET_FAIL = Counter("classic_task_fail_total", "fail")
+except ValueError:
+    pass
 
 BUCKET_CAPACITY = 10
 BUCKET_REFILL_SEC = 60
