@@ -139,6 +139,15 @@ async def send_selected_bot_message(payload: MsgReq):
     sent = 0
     failed = 0
     
+    msg_content = payload.message.strip()
+    
+    # Agar message emote syntax hai, toh usko properly structure karo
+    msg_type = "message"
+    if msg_content.startswith("[emote:") and msg_content.endswith("]"):
+        msg_type = "emote"
+
+    print(f"DEBUG: Sending to streamer '{payload.streamer}' | Content: {msg_content} | Type: {msg_type}")
+
     async with httpx.AsyncClient(timeout=10.0) as client:
         chatroom_id = None
         try:
@@ -161,12 +170,13 @@ async def send_selected_bot_message(payload: MsgReq):
             }
             
             body = {
-                "content": payload.message,
-                "type": "message"
+                "content": msg_content,
+                "type": msg_type
             }
             
             try:
                 resp = await client.post(f"https://kick.com/api/v2/messages/send/{chatroom_id}", json=body, headers=headers)
+                print(f"DEBUG Response Status: {resp.status_code}, Body: {resp.text}")
                 if resp.status_code in [200, 201]:
                     sent += 1
                 else:
