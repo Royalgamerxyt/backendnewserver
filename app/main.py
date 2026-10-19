@@ -141,12 +141,10 @@ async def send_selected_bot_message(payload: MsgReq):
     
     msg_content = payload.message.strip()
     
-    # Agar message emote syntax hai, toh usko properly structure karo
-    msg_type = "message"
-    if msg_content.startswith("[emote:") and msg_content.endswith("]"):
-        msg_type = "emote"
-
-    print(f"DEBUG: Sending to streamer '{payload.streamer}' | Content: {msg_content} | Type: {msg_type}")
+    # Check if message is a standard emote syntax tag
+    is_emote = msg_content.startswith("[emote:") and msg_content.endswith("]")
+    
+    print(f"DEBUG: Dispatching to streamer '{payload.streamer}' | Content: {msg_content} | IsEmote: {is_emote}")
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         chatroom_id = None
@@ -169,9 +167,10 @@ async def send_selected_bot_message(payload: MsgReq):
                 "Accept": "application/json"
             }
             
+            # Agar emote hai toh proper metadata structure set karenge
             body = {
                 "content": msg_content,
-                "type": msg_type
+                "type": "emote" if is_emote else "message"
             }
             
             try:
