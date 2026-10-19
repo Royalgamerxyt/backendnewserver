@@ -69,7 +69,7 @@ def add_tokens(payload: AddTokensReq):
     ids = []
     for t in payload.tokens:
         enc = fernet.encrypt(t.encode()).decode()
-        tok = Token(token_enc=enc, added_at=datetime.utcnow())[cite: 11]
+        tok = Token(token_enc=enc, added_at=datetime.utcnow())
         db.add(tok)
         db.commit()
         ids.append(tok.id)
