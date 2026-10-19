@@ -139,8 +139,9 @@ async def send_selected_bot_message(payload: MsgReq):
     sent = 0
     failed = 0
     
+    print(f"DEBUG: Attempting to send message/emote to streamer '{payload.streamer}': {payload.message}")
+    
     async with httpx.AsyncClient(timeout=10.0) as client:
-        # 1. Streamer ke channel details se numeric chatroom_id fetch karte hain
         chatroom_id = None
         try:
             chan_resp = await client.get(f"https://kick.com/api/v2/channels/{payload.streamer.strip().lower()}")
@@ -151,9 +152,11 @@ async def send_selected_bot_message(payload: MsgReq):
             print(f"Chatroom ID fetch error: {e}")
             
         if not chatroom_id:
+            print(f"DEBUG: Could not resolve chatroom ID for {payload.streamer}")
             return {"success": False, "error": f"Could not find chatroom ID for streamer: {payload.streamer}"}
 
-        # 2. Messages ya emotes ko tokens ke zariye chatroom mein dispatch karenge
+        print(f"DEBUG: Resolved Chatroom ID: {chatroom_id}")
+
         for t in payload.tokens:
             headers = {
                 "Authorization": f"Bearer {t}",
@@ -169,11 +172,13 @@ async def send_selected_bot_message(payload: MsgReq):
             
             try:
                 resp = await client.post(f"https://kick.com/api/v2/messages/send/{chatroom_id}", json=body, headers=headers)
+                print(f"DEBUG: Kick API Response Status: {resp.status_code}, Body: {resp.text}")
                 if resp.status_code in [200, 201]:
                     sent += 1
                 else:
                     failed += 1
-            except Exception:
+            except Exception as ex:
+                print(f"DEBUG: Request exception: {ex}")
                 failed += 1
                 
     return {
