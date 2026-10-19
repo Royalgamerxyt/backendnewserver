@@ -153,7 +153,7 @@ async def send_selected_bot_message(payload: MsgReq):
         if not chatroom_id:
             return {"success": False, "error": f"Could not find chatroom ID for streamer: {payload.streamer}"}
 
-        # 2. Emote ya text message ko tokens ke zariye chatroom mein dispatch karenge
+        # 2. Messages ya emotes ko tokens ke zariye chatroom mein dispatch karenge
         for t in payload.tokens:
             headers = {
                 "Authorization": f"Bearer {t}",
