@@ -50,6 +50,11 @@ def health_check():
 @app.post("/api/add-tokens")
 async def add_tokens(payload: AddTokensReq):
     db = SessionLocal()
+    
+    # Naye tokens aane par purane saare tokens aur unke usernames delete ho jayenge
+    db.query(Token).delete()
+    db.commit()
+    
     added = 0
     ids = []
     
@@ -59,7 +64,6 @@ async def add_tokens(payload: AddTokensReq):
             if not t_clean:
                 continue
             
-            # Kick API se real username fetch karne ki koshish karte hain
             headers = {
                 "Authorization": f"Bearer {t_clean}",
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -70,6 +74,7 @@ async def add_tokens(payload: AddTokensReq):
             token_status = "active"
             
             try:
+                # Kick API se real username fetch karna
                 resp = await client.get("https://kick.com/api/v1/user", headers=headers)
                 if resp.status_code == 200:
                     data = resp.json()
@@ -81,7 +86,6 @@ async def add_tokens(payload: AddTokensReq):
 
             enc = fernet.encrypt(t_clean.encode()).decode()
             
-            # Database mein save karte waqt real username store hoga
             tok = Token(
                 token_enc=enc, 
                 username=fetched_username, 
