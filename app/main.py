@@ -62,6 +62,8 @@ class MessageReq(BaseModel):
     message: str
     proxies: Optional[List[str]] = []
 
+from datetime import datetime  # Ensure kar lena ki ye top par imported ho
+
 @app.post("/api/add-tokens")
 def add_tokens(payload: AddTokensReq):
     db = SessionLocal()
@@ -69,7 +71,7 @@ def add_tokens(payload: AddTokensReq):
     ids = []
     for t in payload.tokens:
         enc = fernet.encrypt(t.encode()).decode()
-        tok = Token(token_enc=enc, added_at=datetime.utcnow())
+        tok = Token(token_enc=enc, added_at=datetime.utcnow())  # <-- Yeh line zaroori hai
         db.add(tok)
         db.commit()
         ids.append(tok.id)
