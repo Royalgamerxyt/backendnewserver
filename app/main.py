@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import List, Optional
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, Integer, String, DateTime
@@ -40,23 +40,30 @@ class Token(Base):
 
 Base.metadata.create_all(bind=engine)
 
-class AddTokensReq(BaseModel):
+class TokensReq(BaseModel):
     tokens: List[str]
+    proxies: Optional[List[str]] = []
+
+class FollowReq(BaseModel):
+    streamer: str
+    tokens: List[str]
+    proxies: Optional[List[str]] = []
+
+class MsgReq(BaseModel):
+    streamer: str
+    tokens: List[str]
+    message: str
+    proxies: Optional[List[str]] = []
 
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
 
-@app.post("/api/add-tokens")
-async def add_tokens(payload: AddTokensReq):
-    db = SessionLocal()
-    
-    # Naye tokens aane par purane saare tokens aur unke usernames delete ho jayenge
-    db.query(Token).delete()
-    db.commit()
-    
-    added = 0
-    ids = []
+@app.post("/api/validate-tokens")
+async def validate_tokens(payload: TokensReq):
+    results = []
+    valid_count = 0
+    invalid_count = 0
     
     async with httpx.AsyncClient(timeout=10.0) as client:
         for t in payload.tokens:
@@ -70,48 +77,90 @@ async def add_tokens(payload: AddTokensReq):
                 "Accept": "application/json"
             }
             
-            fetched_username = None
-            token_status = "active"
+            is_valid = False
+            username = "Unknown"
             
             try:
-                # Kick API se real username fetch karna
                 resp = await client.get("https://kick.com/api/v1/user", headers=headers)
                 if resp.status_code == 200:
                     data = resp.json()
-                    fetched_username = data.get("username")
+                    username = data.get("username", "Unknown")
+                    is_valid = True
+                    valid_count += 1
                 else:
-                    token_status = "invalid"
+                    invalid_count += 1
             except Exception:
-                token_status = "error"
-
-            enc = fernet.encrypt(t_clean.encode()).decode()
+                invalid_count += 1
+                
+            results.append({
+                "token": t_clean,
+                "valid": is_valid,
+                "username": username
+            })
             
-            tok = Token(
-                token_enc=enc, 
-                username=fetched_username, 
-                status=token_status,
-                added_at=datetime.utcnow()
-            )
-            db.add(tok)
-            db.commit()
-            db.refresh(tok)
-            ids.append(tok.id)
-            added += 1
-            
-    db.close()
-    return {"success": True, "added": added, "ids": ids}
+    return {
+        "success": True,
+        "summary": {
+            "validCount": valid_count,
+            "invalidCount": invalid_count,
+            "total": valid_count + invalid_count
+        },
+        "results": results
+    }
 
-@app.get("/api/list-tokens")
-def list_tokens():
-    db = SessionLocal()
-    rows = db.query(Token).all()
-    out = [
-        {
-            "id": r.id, 
-            "username": r.username if r.username else f"Account #{r.id}", 
-            "status": r.status
-        } 
-        for r in rows
-    ]
-    db.close()
-    return {"tokens": out}
+@app.post("/api/follow-selected-channel")
+async def follow_selected_channel(payload: FollowReq):
+    followed = 0
+    failed = 0
+    
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        for t in payload.tokens:
+            headers = {
+                "Authorization": f"Bearer {t}",
+                "User-Agent": "Mozilla/5.0",
+                "Accept": "application/json"
+            }
+            try:
+                resp = await client.post(f"https://kick.com/api/v1/channels/{payload.streamer}/follow", headers=headers)
+                if resp.status_code in [200, 201]:
+                    followed += 1
+                else:
+                    failed += 1
+            except Exception:
+                failed += 1
+                
+    return {
+        "success": True,
+        "summary": {"followed": followed, "failed": failed}
+    }
+
+@app.post("/api/send-selected-bot-message")
+async def send_selected_bot_message(payload: MsgReq):
+    sent = 0
+    failed = 0
+    
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        for t in payload.tokens:
+            headers = {
+                "Authorization": f"Bearer {t}",
+                "User-Agent": "Mozilla/5.0",
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            }
+            body = {
+                "content": payload.message,
+                "type": "message"
+            }
+            try:
+                resp = await client.post(f"https://kick.com/api/v2/messages/send/{payload.streamer}", json=body, headers=headers)
+                if resp.status_code in [200, 201]:
+                    sent += 1
+                else:
+                    failed += 1
+            except Exception:
+                failed += 1
+                
+    return {
+        "success": True,
+        "summary": {"sent": sent, "failed": failed}
+    }
